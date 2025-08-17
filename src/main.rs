@@ -1083,11 +1083,67 @@ runTests();"#
 }
 
 fn calculate_file_hash(filename: &str) -> Result<String> {
-    let content = fs::read(filename)?;
+    let content = fs::read_to_string(filename)?;
+    // Normalize content by removing extra whitespace and newlines
+    let normalized = content
+        .lines()
+        .map(|line| line.trim_end())
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    
     let mut hasher = Sha256::new();
-    hasher.update(&content);
+    hasher.update(normalized.as_bytes());
     let result = hasher.finalize();
     Ok(format!("{:x}", result))
+}
+
+fn has_meaningful_changes(filename: &str, _initial_hash: &str) -> Result<bool> {
+    let current_content = fs::read_to_string(filename)?;
+    
+    // Check if the user has added meaningful code beyond the TODO comment
+    let meaningful_indicators = [
+        "return ",       // Most functions should return something
+        "=",            // Variable assignments
+        "if ",          // Conditional logic
+        "for ",         // Loops
+        "while ",       // Loops
+        "def ",         // Python function definitions
+        "fn ",          // Rust function definitions
+        "function ",    // JavaScript function definitions
+        "class ",       // Class definitions
+        "{",            // Code blocks (but not just opening braces)
+        "print",        // Debug prints
+        "console.log",  // JavaScript logging
+        "println!",     // Rust printing
+    ];
+    
+    let lines: Vec<&str> = current_content.lines().collect();
+    let mut meaningful_lines = 0;
+    
+    for line in &lines {
+        let trimmed = line.trim();
+        
+        // Skip empty lines, comments, and TODO lines
+        if trimmed.is_empty() || 
+           trimmed.starts_with("//") || 
+           trimmed.starts_with("#") || 
+           trimmed.to_lowercase().contains("todo") ||
+           trimmed == "{" || trimmed == "}" || // Just braces
+           trimmed == "pass" || // Python pass statement
+           trimmed == "return [];" || trimmed == "return vec![];" // Empty returns
+        {
+            continue;
+        }
+        
+        // Check for meaningful code patterns
+        if meaningful_indicators.iter().any(|&indicator| trimmed.contains(indicator)) {
+            meaningful_lines += 1;
+        }
+    }
+    
+    // Consider it meaningful if there are at least 2 lines of actual code
+    Ok(meaningful_lines >= 2)
 }
 
 fn track_enhanced_activity(filename: &str, initial_hash: &str, test_command: &str) -> Result<ActivityResult> {
@@ -1098,7 +1154,12 @@ fn track_enhanced_activity(filename: &str, initial_hash: &str, test_command: &st
         return Ok(ActivityResult::NotAttempted);
     }
     
-    // File was modified, now check if tests pass
+    // Check for meaningful code changes (not just whitespace/formatting)
+    if !has_meaningful_changes(filename, initial_hash)? {
+        return Ok(ActivityResult::NotAttempted);
+    }
+    
+    // File was meaningfully modified, now check if tests pass
     println!("[*] Code changes detected! Running validation tests...");
     
     if run_embedded_tests(test_command)? {
