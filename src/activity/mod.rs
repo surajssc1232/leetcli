@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use chrono::{Utc, NaiveDate, Datelike};
 use colored::*;
+use crate::test::has_test_command;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct ActivityTracker {
@@ -16,8 +17,26 @@ pub struct ActivityTracker {
     pub streak_longest: u32,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ActivitySummary {
+    pub attempted: u32,
+    pub solved: u32,
+    #[serde(default)]
+    pub languages: HashMap<String, LanguageActivity>,
+}
+
+impl Default for ActivitySummary {
+    fn default() -> Self {
+        Self {
+            attempted: 0,
+            solved: 0,
+            languages: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct LanguageActivity {
     pub attempted: u32,
     pub solved: u32,
 }
@@ -149,23 +168,30 @@ pub fn show_activity_graph() -> Result<()> {
     Ok(())
 }
 
-pub fn record_activity_completion(activity: &ActivityResult) -> Result<()> {
+pub fn record_activity_completion(activity: &ActivityResult, language: &str) -> Result<()> {
     let mut tracker = load_activity_tracker()?;
     let today = Utc::now().format("%Y-%m-%d").to_string();
     
     let summary = tracker.daily_counts.entry(today.clone()).or_insert(ActivitySummary::default());
     
-    match activity {
-        ActivityResult::Attempted => {
-            summary.attempted += 1;
-            tracker.total_attempted += 1;
-        }
-        ActivityResult::Solved => {
-            summary.solved += 1;
-            tracker.total_solved += 1;
-            tracker.total_problems += 1;
-        }
-        ActivityResult::NotAttempted => {
+    // Only record activities for languages that have test commands
+    if has_test_command(language) {
+        match activity {
+            ActivityResult::Attempted => {
+                summary.attempted += 1;
+                let lang_activity = summary.languages.entry(language.to_string()).or_insert(LanguageActivity::default());
+                lang_activity.attempted += 1;
+                tracker.total_attempted += 1;
+            }
+            ActivityResult::Solved => {
+                summary.solved += 1;
+                let lang_activity = summary.languages.entry(language.to_string()).or_insert(LanguageActivity::default());
+                lang_activity.solved += 1;
+                tracker.total_solved += 1;
+                tracker.total_problems += 1;
+            }
+            ActivityResult::NotAttempted => {
+            }
         }
     }
     
@@ -244,10 +270,36 @@ pub fn show_daily_progress() -> Result<()> {
         println!("◦ No activity today yet - time to start!");
     }
     
+    // Show language breakdown for today (only languages with test commands)
+    if !today_summary.languages.is_empty() {
+        println!("\n{}", "Language Breakdown (Today):".bright_blue());
+        let mut has_tracked_languages = false;
+        for (language, activity) in &today_summary.languages {
+            if has_test_command(language) {
+                has_tracked_languages = true;
+                if activity.solved > 0 {
+                    println!("  {} {}: {} solved", "✓".green(), language, activity.solved.to_string().bright_green());
+                } else if activity.attempted > 0 {
+                    println!("  {} {}: {} attempted", "#".yellow(), language, activity.attempted.to_string().bright_yellow());
+                }
+            }
+        }
+        if !has_tracked_languages {
+            println!("  No tracked languages used today");
+        }
+    }
+    
+    println!("\n{}", "Overall Stats:".bright_blue());
     println!("▓ Total solved: {}", tracker.total_solved.to_string().bright_green());
     println!("# Total attempted: {}", tracker.total_attempted.to_string().bright_yellow());
     println!("▲ Current streak: {} days", tracker.streak_current.to_string().bright_red());
     println!("★ Longest streak: {} days", tracker.streak_longest.to_string().bright_magenta());
+    
+    // Show supported languages with test commands
+    println!("\n{}", "Supported Languages (with test validation):".bright_blue());
+    let supported_langs = ["rust", "python", "javascript", "java", "c++", "go", "typescript"];
+    println!("  {}", supported_langs.join(", "));
+    println!("  {}", "Note: Only activity in these languages will be tracked for progress.".dimmed());
     
     Ok(())
 }

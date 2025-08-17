@@ -241,12 +241,12 @@ async fn main() -> Result<()> {
     match activity_result {
         ActivityResult::Solved => {
             println!("[✓] All tests passed! Problem solved!");
-            record_activity_completion(&ActivityResult::Solved)?;
+            record_activity_completion(&ActivityResult::Solved, &selected_language)?;
         }
         ActivityResult::Attempted => {
             println!("[#] Good effort! You modified the code but some tests failed.");
             println!("[!] Keep practicing! Run tests manually: {}", test_command);
-            record_activity_completion(&ActivityResult::Attempted)?;
+            record_activity_completion(&ActivityResult::Attempted, &selected_language)?;
         }
         ActivityResult::NotAttempted => {
             println!("[?] No changes detected. Try solving the problem next time!");

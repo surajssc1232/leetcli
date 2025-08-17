@@ -28,6 +28,13 @@ pub fn save_execution_info(exec_info: &ProblemExecution) -> Result<()> {
     Ok(())
 }
 
+pub fn has_test_command(language: &str) -> bool {
+    match language.to_lowercase().as_str() {
+        "rust" | "python" | "javascript" | "java" | "c++" | "go" | "typescript" => true,
+        _ => false,
+    }
+}
+
 pub fn generate_test_command(language: &str, filename: &str) -> String {
     match language.to_lowercase().as_str() {
         "rust" => format!("cd problems && rustc {} && ./{}", filename, filename.replace(".rs", "")),
@@ -181,5 +188,34 @@ fn run_embedded_tests(test_command: &str) -> Result<bool> {
             println!("[×] Failed to run tests: {}", e);
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_test_command() {
+        // Languages with test commands
+        assert!(has_test_command("rust"));
+        assert!(has_test_command("python"));
+        assert!(has_test_command("javascript"));
+        assert!(has_test_command("java"));
+        assert!(has_test_command("c++"));
+        assert!(has_test_command("go"));
+        assert!(has_test_command("typescript"));
+        
+        // Test case insensitive
+        assert!(has_test_command("RUST"));
+        assert!(has_test_command("Python"));
+        assert!(has_test_command("JavaScript"));
+        
+        // Languages without test commands
+        assert!(!has_test_command("zig"));
+        assert!(!has_test_command("nim"));
+        assert!(!has_test_command("swift"));
+        assert!(!has_test_command("kotlin"));
+        assert!(!has_test_command("unknown"));
     }
 }
