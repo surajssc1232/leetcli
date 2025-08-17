@@ -17,8 +17,8 @@ struct Cli {
     model: String,
     
     /// Problem difficulty level (interactive if no value provided)
-    #[arg(short = 'd', long = "difficulty", value_name = "LEVEL")]
-    difficulty: Option<String>,
+    #[arg(short = 'd', long = "difficulty", value_name = "LEVEL", num_args = 0..=1, default_missing_value = "", action = clap::ArgAction::Append)]
+    difficulty: Vec<String>,
     
     /// Show available models
     #[arg(long = "list-models")]
@@ -44,36 +44,33 @@ async fn main() -> Result<()> {
     }
     
     // Determine difficulty to use
-    let difficulty = match cli.difficulty {
-        Some(diff) => {
+    let difficulty = if !cli.difficulty.is_empty() {
+        let diff = &cli.difficulty[0];
+        if diff.is_empty() {
+            // -d flag used without value - show interactive dropdown
+            let difficulties = vec!["easy", "medium", "hard"];
+            let selected = Select::new("Select difficulty level:", difficulties).prompt()?;
+            if let Err(e) = save_difficulty_preference(selected) {
+                eprintln!("[!] Warning: Could not save difficulty preference: {}", e);
+            } else {
+                println!("[+] Difficulty preference saved: {}", selected);
+            }
+            selected.to_string()
+        } else {
             // User provided -d with value
-            if !is_valid_difficulty(&diff) {
+            if !is_valid_difficulty(diff) {
                 eprintln!("[!] Invalid difficulty '{}'. Use --list-difficulties to see available options.", diff);
                 return Ok(());
             }
             // Update saved preference
-            if let Err(e) = save_difficulty_preference(&diff) {
+            if let Err(e) = save_difficulty_preference(diff) {
                 eprintln!("[!] Warning: Could not save difficulty preference: {}", e);
             }
-            diff
-        },
-        None => {
-            // Check if -d flag was used without value
-            if args_contain_difficulty_flag() {
-                // Show interactive dropdown
-                let difficulties = vec!["easy", "medium", "hard"];
-                let selected = Select::new("Select difficulty level:", difficulties).prompt()?;
-                if let Err(e) = save_difficulty_preference(selected) {
-                    eprintln!("[!] Warning: Could not save difficulty preference: {}", e);
-                } else {
-                    println!("[+] Difficulty preference saved: {}", selected);
-                }
-                selected.to_string()
-            } else {
-                // Use saved preference or ask for first time
-                get_difficulty_preference()?
-            }
+            diff.clone()
         }
+    } else {
+        // No -d flag used - use saved preference or ask for first time
+        get_difficulty_preference()?
     };
     
     println!(">> LeetCli - Generate LeetCode Problems");
@@ -126,11 +123,6 @@ async fn main() -> Result<()> {
     println!("[✓] Problem generated: {}", filename);
     
     Ok(())
-}
-
-fn args_contain_difficulty_flag() -> bool {
-    let args: Vec<String> = std::env::args().collect();
-    args.iter().any(|arg| arg == "-d" || arg == "--difficulty")
 }
 
 fn print_available_models() {
