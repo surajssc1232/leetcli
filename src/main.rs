@@ -17,8 +17,8 @@ struct Cli {
     model: String,
     
     /// Problem difficulty level (interactive if no value provided)
-    #[arg(short = 'd', long = "difficulty", value_name = "LEVEL", num_args = 0..=1, default_missing_value = "", action = clap::ArgAction::Append)]
-    difficulty: Vec<String>,
+    #[arg(short = 'd', long = "difficulty", value_name = "LEVEL", num_args = 0..=1, default_missing_value = "")]
+    difficulty: Option<String>,
     
     /// Show available models
     #[arg(long = "list-models")]
@@ -44,10 +44,21 @@ async fn main() -> Result<()> {
     }
     
     // Determine difficulty to use
-    let difficulty = if !cli.difficulty.is_empty() {
-        let diff = &cli.difficulty[0];
-        if diff.is_empty() {
-            // -d flag used without value - show interactive dropdown
+    let difficulty = match cli.difficulty {
+        Some(diff) if !diff.is_empty() => {
+            // User provided -d with value
+            if !is_valid_difficulty(&diff) {
+                eprintln!("[!] Invalid difficulty '{}'. Use --list-difficulties to see available options.", diff);
+                return Ok(());
+            }
+            // Update saved preference
+            if let Err(e) = save_difficulty_preference(&diff) {
+                eprintln!("[!] Warning: Could not save difficulty preference: {}", e);
+            }
+            diff
+        },
+        Some(_) => {
+            // -d flag used without value (empty string) - show interactive dropdown and exit
             let difficulties = vec!["easy", "medium", "hard"];
             let selected = Select::new("Select difficulty level:", difficulties).prompt()?;
             if let Err(e) = save_difficulty_preference(selected) {
@@ -55,22 +66,12 @@ async fn main() -> Result<()> {
             } else {
                 println!("[+] Difficulty preference saved: {}", selected);
             }
-            selected.to_string()
-        } else {
-            // User provided -d with value
-            if !is_valid_difficulty(diff) {
-                eprintln!("[!] Invalid difficulty '{}'. Use --list-difficulties to see available options.", diff);
-                return Ok(());
-            }
-            // Update saved preference
-            if let Err(e) = save_difficulty_preference(diff) {
-                eprintln!("[!] Warning: Could not save difficulty preference: {}", e);
-            }
-            diff.clone()
+            return Ok(()); // Exit after setting difficulty
+        },
+        None => {
+            // No -d flag used - use saved preference or ask for first time
+            get_difficulty_preference()?
         }
-    } else {
-        // No -d flag used - use saved preference or ask for first time
-        get_difficulty_preference()?
     };
     
     println!(">> LeetCli - Generate LeetCode Problems");
