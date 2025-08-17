@@ -1,6 +1,6 @@
 [package]
 name = "leetcli"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 authors = ["Suraj chauhan surajssc1232@gmail.com"]
 description = "A CLI tool that generates random LeetCode problems with skeleton code using AI"
