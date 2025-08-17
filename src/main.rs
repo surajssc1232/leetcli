@@ -11,6 +11,7 @@ use chrono::{Utc, NaiveDate, Datelike};
 use colored::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use sha2::{Sha256, Digest};
 
 #[derive(Parser)]
 #[command(name = "leetcli")]
@@ -25,9 +26,13 @@ struct Cli {
     #[arg(short = 'd', long = "difficulty", value_name = "LEVEL", num_args = 0..=1, default_missing_value = "")]
     difficulty: Option<String>,
     
-    /// Show activity graph for the year
+    /// Show activity graph
     #[arg(short = 'g', long = "graph")]
     graph: bool,
+    
+    /// Editor to use for opening problems (neovim, helix, nano, emacs, etc.)
+    #[arg(short = 'e', long = "editor", default_value = "nvim")]
+    editor: String,
     
     /// Show available models
     #[arg(long = "list-models")]
@@ -40,10 +45,18 @@ struct Cli {
 
 #[derive(Serialize, Deserialize, Default)]
 struct ActivityTracker {
-    daily_counts: HashMap<String, u32>, // date (YYYY-MM-DD) -> problem count
+    daily_counts: HashMap<String, ActivitySummary>, // date -> activity summary
     total_problems: u32,
+    total_attempted: u32,
+    total_solved: u32,
     streak_current: u32,
     streak_longest: u32,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct ActivitySummary {
+    attempted: u32,
+    solved: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,6 +64,14 @@ struct ProblemExecution {
     filename: String,
     language: String,
     test_command: String,
+    initial_hash: String,
+}
+
+#[derive(Debug)]
+enum ActivityResult {
+    NotAttempted,
+    Attempted,
+    Solved,
 }
 
 #[tokio::main]
@@ -254,11 +275,14 @@ async fn main() -> Result<()> {
 
     println!("Generating {} problem for {}...", selected_topic, selected_language);
 
-    let problem = generate_problem(&selected_topic, &selected_language, &api_key, &cli.model, &difficulty).await?;
+    let problem = generate_problem_with_tests(&selected_topic, &selected_language, &api_key, &cli.model, &difficulty).await?;
     
     let filename = create_problem_file(&problem, &selected_language)?;
     
     println!("[✓] Problem generated: {}", filename);
+    
+    // Calculate initial file hash for change detection
+    let initial_hash = calculate_file_hash(&filename)?;
     
     // Generate test command for the language
     let test_command = generate_test_command(&selected_language, &filename);
@@ -268,26 +292,35 @@ async fn main() -> Result<()> {
         filename: filename.clone(),
         language: selected_language.clone(),
         test_command: test_command.clone(),
+        initial_hash: initial_hash.clone(),
     };
     save_execution_info(&exec_info)?;
     
-    println!("[\u{1F4DD}] Opening in neovim...");
-    println!("[\u{1F4A1}] After solving, save and exit to run tests automatically");
+    println!("[\u{1F4DD}] Opening in {}...", cli.editor);
+    println!("[\u{1F4A1}] After solving, save and exit to automatically validate your solution");
     
-    // Open in neovim and wait for it to close
-    open_in_neovim(&filename)?;
+    // Open in specified editor and wait for it to close
+    open_in_editor(&filename, &cli.editor)?;
     
-    println!("[\u{1F50D}] Running tests...");
+    // Track activity based on file changes and test results
+    let activity_result = track_enhanced_activity(&filename, &initial_hash, &test_command)?;
     
-    // Run tests and check if they pass
-    if run_tests(&test_command)? {
-        println!("[\u{2705}] All tests passed! Great job!");
-        record_problem_completion()?;
-        show_daily_progress()?;
-    } else {
-        println!("[\u{274C}] Some tests failed. Keep practicing!");
-        println!("[\u{1F4A1}] Run the tests manually: {}", test_command);
+    match activity_result {
+        ActivityResult::Solved => {
+            println!("[\u{2705}] All tests passed! Problem solved!");
+            record_activity_completion(&ActivityResult::Solved)?;
+        }
+        ActivityResult::Attempted => {
+            println!("[\u{1F4DD}] Good effort! You modified the code but some tests failed.");
+            println!("[\u{1F4A1}] Keep practicing! Run tests manually: {}", test_command);
+            record_activity_completion(&ActivityResult::Attempted)?;
+        }
+        ActivityResult::NotAttempted => {
+            println!("[\u{1F914}] No changes detected. Try solving the problem next time!");
+        }
     }
+    
+    show_daily_progress()?;
     
     Ok(())
 }
@@ -441,14 +474,14 @@ fn get_api_key() -> Result<String> {
     Ok(api_key)
 }
 
-async fn generate_problem(topic: &str, language: &str, api_key: &str, model: &str, difficulty: &str) -> Result<String> {
+async fn generate_problem_with_tests(topic: &str, language: &str, api_key: &str, model: &str, difficulty: &str) -> Result<String> {
     let client = Client::new();
     
     let prompt = format!(
         "CRITICAL: The very first line must be the problem title as a comment.
 Format: // Problem Title Here (for most languages) or # Problem Title Here (for Python)
 
-Generate ONLY a LeetCode-style function skeleton for a {} problem in {} with {} difficulty.
+Generate a LeetCode-style {} problem in {} with {} difficulty that includes EMBEDDED TEST CASES.
 
 DIFFICULTY GUIDELINES:
 - Easy: Simple logic, basic data structures, straightforward algorithms
@@ -457,27 +490,35 @@ DIFFICULTY GUIDELINES:
 
 EXACT FORMAT REQUIRED:
 1. Problem title as the very first comment line
-2. Multiple detailed examples with input/output as comments (at least 2 examples)
-3. Function signature with empty body containing ONLY 'TODO: implement'
-4. Test cases that call the function to verify implementation
-5. NO solution logic, NO working code in the main function
+2. Detailed problem description with examples (at least 2-3 examples)
+3. Function signature with empty body containing 'TODO: implement your solution here'
+4. EMBEDDED TEST RUNNER with at least 5 diverse test cases
+5. Test runner that prints PASS/FAIL for each test and final summary
+6. NO solution logic in the main function - just the skeleton
 
-Example skeleton for {}:
+Example structure for {}:
 {}
 
-Generate a random {} {} difficulty problem following this EXACT format.
-The function body must be completely empty except for the TODO comment.
-Include comprehensive test cases that demonstrate the expected behavior.
-Do NOT include any markdown formatting or code blocks.",
-        topic, 
+CRITICAL REQUIREMENTS:
+- Function body must be EMPTY (just TODO comment)
+- Test runner must work when the function is properly implemented
+- Test cases should cover edge cases (empty inputs, single elements, large inputs)
+- Print clear PASS/FAIL messages for each test
+- Include a main section that runs all tests
+- NO markdown formatting or code blocks in response
+
+Generate a random {} {} difficulty problem following this EXACT format with comprehensive test coverage.",
+        topic,
         language,
         difficulty,
         language,
-        get_skeleton_example(language),
+        get_enhanced_skeleton_example(language),
         topic,
         difficulty
     );
-
+    
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", model, api_key);
+    
     let request_body = json!({
         "contents": [{
             "parts": [{
@@ -485,15 +526,14 @@ Do NOT include any markdown formatting or code blocks.",
             }]
         }],
         "generationConfig": {
-            "temperature": 0.7,
+            "temperature": 0.9,
+            "topK": 40,
+            "topP": 0.95,
             "maxOutputTokens": 2048
         }
     });
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", model, api_key);
-    
-    let response = client
-        .post(&url)
+    let response = client.post(&url)
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -518,222 +558,6 @@ Do NOT include any markdown formatting or code blocks.",
 
     let cleaned_content = clean_content(content);
     Ok(cleaned_content)
-}
-
-fn get_skeleton_example(language: &str) -> &'static str {
-    match language {
-        "Rust" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target, 
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-fn two_sum(nums: Vec<i32>, target: i32) -> Vec<i32> {
-    // TODO: implement
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_two_sum() {
-        assert_eq!(two_sum(vec![2,7,11,15], 9), vec![0,1]);
-        assert_eq!(two_sum(vec![3,2,4], 6), vec![1,2]);
-        assert_eq!(two_sum(vec![3,3], 6), vec![0,1]);
-    }
-}"
-        },
-        "Python" => {
-            "# Two Sum
-# Given an array of integers nums and an integer target,
-# return indices of two numbers that add up to target.
-#
-# Example 1:
-# Input: nums = [2,7,11,15], target = 9
-# Output: [0,1]
-# Explanation: nums[0] + nums[1] = 2 + 7 = 9
-#
-# Example 2:
-# Input: nums = [3,2,4], target = 6
-# Output: [1,2]
-
-def two_sum(nums, target):
-    # TODO: implement
-    pass
-
-if __name__ == \"__main__\":
-    # Test cases
-    assert two_sum([2,7,11,15], 9) == [0,1]
-    assert two_sum([3,2,4], 6) == [1,2]
-    assert two_sum([3,3], 6) == [0,1]
-    print(\"All tests passed!\")"
-        },
-        "JavaScript" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target,
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-function twoSum(nums, target) {
-    // TODO: implement
-}
-
-// Test cases
-function runTests() {
-    console.log(twoSum([2,7,11,15], 9)); // Expected: [0,1]
-    console.log(twoSum([3,2,4], 6));     // Expected: [1,2]
-    console.log(twoSum([3,3], 6));       // Expected: [0,1]
-}
-
-runTests();"
-        },
-        "Java" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target,
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-import java.util.Arrays;
-
-public class Solution {
-    public int[] twoSum(int[] nums, int target) {
-        // TODO: implement
-        return new int[0];
-    }
-    
-    public static void main(String[] args) {
-        Solution solution = new Solution();
-        
-        // Test cases
-        System.out.println(Arrays.toString(solution.twoSum(new int[]{2,7,11,15}, 9))); // Expected: [0,1]
-        System.out.println(Arrays.toString(solution.twoSum(new int[]{3,2,4}, 6)));     // Expected: [1,2]
-        System.out.println(Arrays.toString(solution.twoSum(new int[]{3,3}, 6)));       // Expected: [0,1]
-    }
-}"
-        },
-        "C++" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target,
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-#include <vector>
-#include <iostream>
-using namespace std;
-
-vector<int> twoSum(vector<int>& nums, int target) {
-    // TODO: implement
-    return {};
-}
-
-int main() {
-    // Test cases
-    vector<int> nums1 = {2,7,11,15};
-    vector<int> result1 = twoSum(nums1, 9);
-    cout << \"Test 1: [\" << result1[0] << \",\" << result1[1] << \"]\" << endl; // Expected: [0,1]
-    
-    vector<int> nums2 = {3,2,4};
-    vector<int> result2 = twoSum(nums2, 6);
-    cout << \"Test 2: [\" << result2[0] << \",\" << result2[1] << \"]\" << endl; // Expected: [1,2]
-    
-    return 0;
-}"
-        },
-        "Go" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target,
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-package main
-
-import \"fmt\"
-
-func twoSum(nums []int, target int) []int {
-    // TODO: implement
-    return []int{}
-}
-
-func main() {
-    // Test cases
-    fmt.Println(twoSum([]int{2,7,11,15}, 9)) // Expected: [0 1]
-    fmt.Println(twoSum([]int{3,2,4}, 6))     // Expected: [1 2]
-    fmt.Println(twoSum([]int{3,3}, 6))       // Expected: [0 1]
-}"
-        },
-        "TypeScript" => {
-            "// Two Sum
-// Given an array of integers nums and an integer target,
-// return indices of two numbers that add up to target.
-//
-// Example 1:
-// Input: nums = [2,7,11,15], target = 9
-// Output: [0,1]
-// Explanation: nums[0] + nums[1] = 2 + 7 = 9
-//
-// Example 2:
-// Input: nums = [3,2,4], target = 6
-// Output: [1,2]
-
-function twoSum(nums: number[], target: number): number[] {
-    // TODO: implement
-    return [];
-}
-
-// Test cases
-function runTests(): void {
-    console.log(twoSum([2,7,11,15], 9)); // Expected: [0,1]
-    console.log(twoSum([3,2,4], 6));     // Expected: [1,2]
-    console.log(twoSum([3,3], 6));       // Expected: [0,1]
-}
-
-runTests();"
-        },
-        _ => {
-            "// Function skeleton with TODO comment and test cases"
-        }
-    }
 }
 
 fn clean_content(content: &str) -> String {
@@ -885,8 +709,8 @@ fn generate_test_command(language: &str, filename: &str) -> String {
     }
 }
 
-fn open_in_neovim(filename: &str) -> Result<()> {
-    let status = Command::new("nvim")
+fn open_in_editor(filename: &str, editor: &str) -> Result<()> {
+    let status = Command::new(editor)
         .arg(filename)
         .status();
     
@@ -895,128 +719,20 @@ fn open_in_neovim(filename: &str) -> Result<()> {
             if exit_status.success() {
                 Ok(())
             } else {
-                Err(anyhow::anyhow!("Neovim exited with error"))
+                Err(anyhow::anyhow!("{} exited with error", editor))
             }
         },
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                println!("[!] Neovim not found. Please install neovim or edit the file manually: {}", filename);
-                println!("[\u{1F4A1}] Install neovim: https://neovim.io/");
+                println!("[!] {} not found. Please install {} or use a different editor with -e/--editor", editor, editor);
+                println!("[\u{1F4A1}] Available editors: nvim, helix, nano, emacs, vim, code, etc.");
+                println!("[\u{1F4A1}] You can edit the file manually: {}", filename);
                 Ok(())
             } else {
-                Err(anyhow::anyhow!("Failed to open neovim: {}", e))
+                Err(anyhow::anyhow!("Failed to open {}: {}", editor, e))
             }
         }
     }
-}
-
-fn run_tests(test_command: &str) -> Result<bool> {
-    println!("[\u{1F50D}] Running: {}", test_command);
-    
-    let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", test_command])
-            .output()
-    } else {
-        Command::new("sh")
-            .args(["-c", test_command])
-            .output()
-    };
-
-    match output {
-        Ok(result) => {
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            
-            if !stdout.is_empty() {
-                println!("[\u{1F4E4}] Output:\n{}", stdout);
-            }
-            if !stderr.is_empty() {
-                println!("[\u{26A0}\u{FE0F}] Errors:\n{}", stderr);
-            }
-            
-            // Consider tests passed if exit code is 0 and no error output (for most languages)
-            Ok(result.status.success() && stderr.trim().is_empty())
-        },
-        Err(e) => {
-            println!("[\u{274C}] Failed to run tests: {}", e);
-            Ok(false)
-        }
-    }
-}
-
-fn record_problem_completion() -> Result<()> {
-    let mut tracker = load_activity_tracker()?;
-    let today = Utc::now().format("%Y-%m-%d").to_string();
-    
-    // Increment today's count
-    *tracker.daily_counts.entry(today.clone()).or_insert(0) += 1;
-    tracker.total_problems += 1;
-    
-    // Update streaks
-    update_streaks(&mut tracker)?;
-    
-    save_activity_tracker(&tracker)?;
-    Ok(())
-}
-
-fn update_streaks(tracker: &mut ActivityTracker) -> Result<()> {
-    let mut dates: Vec<NaiveDate> = tracker.daily_counts.keys()
-        .filter_map(|date_str| NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok())
-        .collect();
-    dates.sort();
-    
-    if dates.is_empty() {
-        return Ok(());
-    }
-    
-    let today = Utc::now().date_naive();
-    let mut current_streak = 0;
-    let mut longest_streak = 0;
-    let mut temp_streak = 0;
-    
-    // Calculate streaks
-    for date in dates.iter().rev() {
-        let days_diff = (today - *date).num_days();
-        
-        if days_diff == current_streak {
-            current_streak += 1;
-            temp_streak += 1;
-        } else if days_diff == current_streak + 1 && current_streak == 0 {
-            // Yesterday counts for current streak
-            current_streak = 1;
-            temp_streak = 1;
-        } else {
-            if current_streak == 0 {
-                temp_streak += 1;
-            } else {
-                longest_streak = longest_streak.max(temp_streak);
-                temp_streak = 1;
-            }
-        }
-    }
-    
-    longest_streak = longest_streak.max(temp_streak);
-    
-    tracker.streak_current = current_streak as u32;
-    tracker.streak_longest = longest_streak.max(tracker.streak_longest as i64) as u32;
-    
-    Ok(())
-}
-
-fn show_daily_progress() -> Result<()> {
-    let tracker = load_activity_tracker()?;
-    let today = Utc::now().format("%Y-%m-%d").to_string();
-    let today_count = tracker.daily_counts.get(&today).unwrap_or(&0);
-    
-    println!("\n{}", "\u{1F3AF} Progress Summary".bright_cyan());
-    println!("{}", "═══════════════════".bright_cyan());
-    println!("\u{1F4C5} Today: {} problems solved", today_count.to_string().bright_green());
-    println!("\u{1F3C6} Total: {} problems solved", tracker.total_problems.to_string().bright_yellow());
-    println!("\u{1F525} Current streak: {} days", tracker.streak_current.to_string().bright_red());
-    println!("\u{2B50} Longest streak: {} days", tracker.streak_longest.to_string().bright_magenta());
-    
-    Ok(())
 }
 
 fn show_activity_graph() -> Result<()> {
@@ -1090,14 +806,16 @@ fn show_activity_graph() -> Result<()> {
             
             if date.month() == current_month && date.year() == current_year {
                 let date_str = date.format("%Y-%m-%d").to_string();
-                let count = tracker.daily_counts.get(&date_str).unwrap_or(&0);
+                let default_summary = ActivitySummary::default();
+                let summary = tracker.daily_counts.get(&date_str).unwrap_or(&default_summary);
                 
-                // Empty box for no activity, filled box for activity
-                let symbol = if *count > 0 { "■" } else { "□" };
-                let colored_symbol = if *count > 0 {
-                    symbol.green()
+                // Different symbols based on activity type
+                let (_symbol, colored_symbol) = if summary.solved > 0 {
+                    ("■", "■".green()) // Solved = green filled
+                } else if summary.attempted > 0 {
+                    ("▣", "▣".yellow()) // Attempted = yellow outline
                 } else {
-                    symbol.dimmed()
+                    ("□", "□".dimmed()) // No activity = dimmed empty
                 };
                 
                 print!("{:>3}", colored_symbol);
@@ -1111,10 +829,343 @@ fn show_activity_graph() -> Result<()> {
     
     println!();
     print!("Less ");
-    print!("{}", "□".dimmed()); // empty box
+    print!("{}", "□".dimmed()); // no activity
     print!(" ");
-    print!("{}", "■".green());  // filled box
+    print!("{}", "▣".yellow());  // attempted
+    print!(" ");
+    print!("{}", "■".green());  // solved
     println!(" More");
+    
+    Ok(())
+}
+
+fn get_enhanced_skeleton_example(language: &str) -> &'static str {
+    match language {
+        "Python" => {
+            r#"# Two Sum
+# Given an array of integers nums and an integer target,
+# return indices of two numbers that add up to target.
+#
+# Example 1:
+# Input: nums = [2,7,11,15], target = 9
+# Output: [0,1]
+# Explanation: nums[0] + nums[1] = 2 + 7 = 9
+#
+# Example 2:
+# Input: nums = [3,2,4], target = 6
+# Output: [1,2]
+
+def two_sum(nums, target):
+    # TODO: implement your solution here
+    pass
+
+def run_tests():
+    test_cases = [
+        ([2,7,11,15], 9, [0,1]),
+        ([3,2,4], 6, [1,2]),
+        ([3,3], 6, [0,1]),
+        ([1,2,3,4], 7, [2,3]),
+        ([], 0, [])
+    ]
+    
+    passed = 0
+    for i, (nums, target, expected) in enumerate(test_cases):
+        try:
+            result = two_sum(nums, target)
+            if sorted(result) == sorted(expected):
+                print(f"✓ Test {i+1} PASSED")
+                passed += 1
+            else:
+                print(f"✗ Test {i+1} FAILED: expected {expected}, got {result}")
+        except Exception as e:
+            print(f"✗ Test {i+1} ERROR: {e}")
+    
+    print(f"\nResult: {passed}/{len(test_cases)} tests passed")
+    return passed == len(test_cases)
+
+if __name__ == "__main__":
+    run_tests()"#
+        },
+        "Rust" => {
+            r#"// Two Sum
+// Given an array of integers nums and an integer target,
+// return indices of two numbers that add up to target.
+//
+// Example 1:
+// Input: nums = [2,7,11,15], target = 9
+// Output: [0,1]
+// Explanation: nums[0] + nums[1] = 2 + 7 = 9
+
+fn two_sum(nums: Vec<i32>, target: i32) -> Vec<i32> {
+    // TODO: implement your solution here
+    vec![]
+}
+
+fn run_tests() -> bool {
+    let test_cases = vec![
+        (vec![2,7,11,15], 9, vec![0,1]),
+        (vec![3,2,4], 6, vec![1,2]),
+        (vec![3,3], 6, vec![0,1])
+    ];
+    
+    let mut passed = 0;
+    for (i, (nums, target, expected)) in test_cases.iter().enumerate() {
+        let result = two_sum(nums.clone(), *target);
+        if result == *expected || (result.len() == expected.len() && 
+           result.iter().all(|x| expected.contains(x))) {
+            println!("✓ Test {} PASSED", i + 1);
+            passed += 1;
+        } else {
+            println!("✗ Test {} FAILED: expected {:?}, got {:?}", i + 1, expected, result);
+        }
+    }
+    
+    println!("\nResult: {}/{} tests passed", passed, test_cases.len());
+    passed == test_cases.len()
+}
+
+fn main() {
+    run_tests();
+}"#
+        },
+        "JavaScript" => {
+            r#"// Two Sum
+// Given an array of integers nums and an integer target,
+// return indices of two numbers that add up to target.
+
+function twoSum(nums, target) {
+    // TODO: implement your solution here
+    return [];
+}
+
+function runTests() {
+    const testCases = [
+        [[2,7,11,15], 9, [0,1]],
+        [[3,2,4], 6, [1,2]],
+        [[3,3], 6, [0,1]]
+    ];
+    
+    let passed = 0;
+    testCases.forEach((testCase, i) => {
+        const [nums, target, expected] = testCase;
+        try {
+            const result = twoSum(nums, target);
+            if (JSON.stringify(result.sort()) === JSON.stringify(expected.sort())) {
+                console.log(`✓ Test ${i+1} PASSED`);
+                passed++;
+            } else {
+                console.log(`✗ Test ${i+1} FAILED: expected ${JSON.stringify(expected)}, got ${JSON.stringify(result)}`);
+            }
+        } catch (e) {
+            console.log(`✗ Test ${i+1} ERROR: ${e.message}`);
+        }
+    });
+    
+    console.log(`\nResult: ${passed}/${testCases.length} tests passed`);
+    return passed === testCases.length;
+}
+
+runTests();"#
+        },
+        _ => {
+            "// Generic skeleton - language-specific examples will be generated"
+        }
+    }
+}
+
+fn calculate_file_hash(filename: &str) -> Result<String> {
+    let content = fs::read(filename)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&content);
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
+fn track_enhanced_activity(filename: &str, initial_hash: &str, test_command: &str) -> Result<ActivityResult> {
+    // Check if file was modified
+    let final_hash = calculate_file_hash(filename)?;
+    
+    if initial_hash == final_hash {
+        return Ok(ActivityResult::NotAttempted);
+    }
+    
+    // File was modified, now check if tests pass
+    println!("[\u{1F50D}] Code changes detected! Running validation tests...");
+    
+    if run_embedded_tests(test_command)? {
+        Ok(ActivityResult::Solved)
+    } else {
+        Ok(ActivityResult::Attempted)
+    }
+}
+
+fn run_embedded_tests(test_command: &str) -> Result<bool> {
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", test_command])
+            .output()
+    } else {
+        Command::new("sh")
+            .args(["-c", test_command])
+            .output()
+    };
+
+    match output {
+        Ok(result) => {
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            
+            // Print output for debugging
+            if !stdout.is_empty() {
+                println!("{}", stdout);
+            }
+            if !stderr.is_empty() && !stderr.trim().is_empty() {
+                println!("Warnings: {}", stderr);
+            }
+            
+            // Check for test success indicators in output
+            let success_indicators = [
+                "tests passed",
+                "PASSED",
+                "✓",
+                "All tests passed",
+                "100%"
+            ];
+            
+            let failure_indicators = [
+                "FAILED",
+                "✗",
+                "ERROR",
+                "test failed",
+                "0/"
+            ];
+            
+            let output_text = stdout.to_lowercase();
+            
+            // Check for explicit failure first
+            if failure_indicators.iter().any(|&indicator| output_text.contains(&indicator.to_lowercase())) {
+                return Ok(false);
+            }
+            
+            // Check for success indicators
+            if success_indicators.iter().any(|&indicator| output_text.contains(&indicator.to_lowercase())) {
+                return Ok(true);
+            }
+            
+            // Fallback: if no explicit indicators, check exit code
+            Ok(result.status.success())
+        },
+        Err(e) => {
+            println!("[\u{274C}] Failed to run tests: {}", e);
+            Ok(false)
+        }
+    }
+}
+
+fn record_activity_completion(activity: &ActivityResult) -> Result<()> {
+    let mut tracker = load_activity_tracker()?;
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    
+    // Get or create today's summary
+    let summary = tracker.daily_counts.entry(today.clone()).or_insert(ActivitySummary::default());
+    
+    match activity {
+        ActivityResult::Attempted => {
+            summary.attempted += 1;
+            tracker.total_attempted += 1;
+        }
+        ActivityResult::Solved => {
+            summary.solved += 1;
+            tracker.total_solved += 1;
+            tracker.total_problems += 1;
+        }
+        ActivityResult::NotAttempted => {
+            // No tracking for not attempted
+        }
+    }
+    
+    // Update streaks based on any activity (attempted or solved)
+    update_enhanced_streaks(&mut tracker)?;
+    
+    save_activity_tracker(&tracker)?;
+    Ok(())
+}
+
+fn update_enhanced_streaks(tracker: &mut ActivityTracker) -> Result<()> {
+    let mut dates: Vec<NaiveDate> = tracker.daily_counts.keys()
+        .filter_map(|date_str| NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok())
+        .filter(|date| {
+            if let Some(summary) = tracker.daily_counts.get(&date.format("%Y-%m-%d").to_string()) {
+                summary.attempted > 0 || summary.solved > 0
+            } else {
+                false
+            }
+        })
+        .collect();
+    dates.sort();
+    
+    if dates.is_empty() {
+        return Ok(());
+    }
+    
+    let today = Utc::now().date_naive();
+    let mut current_streak = 0;
+    let mut temp_streak = 0;
+    let mut longest_streak = 0;
+    
+    // Calculate current streak (working backwards from today)
+    let mut check_date = today;
+    while let Some(summary) = tracker.daily_counts.get(&check_date.format("%Y-%m-%d").to_string()) {
+        if summary.attempted > 0 || summary.solved > 0 {
+            current_streak += 1;
+            check_date = check_date.pred_opt().unwrap_or(check_date);
+        } else {
+            break;
+        }
+    }
+    
+    // Calculate longest streak
+    for window in dates.windows(2) {
+        if let [prev, curr] = window {
+            if (*curr - *prev).num_days() == 1 {
+                temp_streak += 1;
+            } else {
+                longest_streak = longest_streak.max(temp_streak + 1);
+                temp_streak = 0;
+            }
+        }
+    }
+    longest_streak = longest_streak.max(temp_streak + 1);
+    
+    tracker.streak_current = current_streak;
+    tracker.streak_longest = longest_streak.max(tracker.streak_longest as i64) as u32;
+    
+    Ok(())
+}
+
+fn show_daily_progress() -> Result<()> {
+    let tracker = load_activity_tracker()?;
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let default_summary = ActivitySummary::default();
+    let today_summary = tracker.daily_counts.get(&today).unwrap_or(&default_summary);
+    
+    println!("\n{}", "\u{1F3AF} Daily Progress".bright_cyan());
+    println!("{}", "═══════════════".bright_cyan());
+    
+    if today_summary.solved > 0 {
+        println!("\u{2705} Problems solved today: {}", today_summary.solved.to_string().bright_green());
+    }
+    if today_summary.attempted > 0 {
+        println!("\u{1F4DD} Problems attempted today: {}", today_summary.attempted.to_string().bright_yellow());
+    }
+    if today_summary.solved == 0 && today_summary.attempted == 0 {
+        println!("\u{1F4C5} No activity today yet - time to start!");
+    }
+    
+    println!("\u{1F4CA} Total solved: {}", tracker.total_solved.to_string().bright_green());
+    println!("\u{1F4DD} Total attempted: {}", tracker.total_attempted.to_string().bright_yellow());
+    println!("\u{1F525} Current streak: {} days", tracker.streak_current.to_string().bright_red());
+    println!("\u{2B50} Longest streak: {} days", tracker.streak_longest.to_string().bright_magenta());
     
     Ok(())
 }
