@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
         }
         
         println!("[+] API key saved successfully");
-        println!("[\u{1F4A1}] You can now use LeetCli without entering your API key each time");
+        println!("[!] You can now use LeetCli without entering your API key each time");
         return Ok(());
     }
     
@@ -316,8 +316,8 @@ async fn main() -> Result<()> {
     };
     save_execution_info(&exec_info)?;
     
-    println!("[\u{1F4DD}] Opening in {}...", cli.editor);
-    println!("[\u{1F4A1}] After solving, save and exit to automatically validate your solution");
+    println!("[#] Opening in {}...", cli.editor);
+    println!("[!] After solving, save and exit to automatically validate your solution");
     
     // Open in specified editor and wait for it to close
     open_in_editor(&filename, &cli.editor)?;
@@ -327,16 +327,16 @@ async fn main() -> Result<()> {
     
     match activity_result {
         ActivityResult::Solved => {
-            println!("[\u{2705}] All tests passed! Problem solved!");
+            println!("[\u{2713}] All tests passed! Problem solved!");
             record_activity_completion(&ActivityResult::Solved)?;
         }
         ActivityResult::Attempted => {
-            println!("[\u{1F4DD}] Good effort! You modified the code but some tests failed.");
-            println!("[\u{1F4A1}] Keep practicing! Run tests manually: {}", test_command);
+            println!("[#] Good effort! You modified the code but some tests failed.");
+            println!("[!] Keep practicing! Run tests manually: {}", test_command);
             record_activity_completion(&ActivityResult::Attempted)?;
         }
         ActivityResult::NotAttempted => {
-            println!("[\u{1F914}] No changes detected. Try solving the problem next time!");
+            println!("[?] No changes detected. Try solving the problem next time!");
         }
     }
     
@@ -650,12 +650,101 @@ fn extract_problem_name(content: &str) -> String {
 fn create_problem_file(content: &str, language: &str) -> Result<String> {
     let extension = match language {
         "Rust" => "rs",
-        "Python" => "py",
-        "JavaScript" => "js", 
+        "Python" | "Python3" => "py",
+        "JavaScript" => "js",
         "Java" => "java",
         "C++" => "cpp",
+        "C" => "c",
         "Go" => "go",
         "TypeScript" => "ts",
+        "C#" | "Csharp" => "cs",
+        "PHP" => "php",
+        "Ruby" => "rb",
+        "Swift" => "swift",
+        "Kotlin" => "kt",
+        "Scala" => "scala",
+        "Perl" => "pl",
+        "R" => "r",
+        "MATLAB" => "m",
+        "Dart" => "dart",
+        "Elixir" => "ex",
+        "Erlang" => "erl",
+        "Clojure" => "clj",
+        "Haskell" => "hs",
+        "OCaml" => "ml",
+        "F#" => "fs",
+        "Lua" => "lua",
+        "Shell" | "Bash" => "sh",
+        "PowerShell" => "ps1",
+        "SQL" => "sql",
+        "HTML" => "html",
+        "CSS" => "css",
+        "SCSS" => "scss",
+        "SASS" => "sass",
+        "LESS" => "less",
+        "JSON" => "json",
+        "XML" => "xml",
+        "YAML" => "yml",
+        "TOML" => "toml",
+        "Vim script" => "vim",
+        "Assembly" => "asm",
+        "COBOL" => "cob",
+        "Fortran" => "f90",
+        "Pascal" => "pas",
+        "Delphi" => "pas",
+        "Ada" => "adb",
+        "Lisp" => "lisp",
+        "Scheme" => "scm",
+        "Prolog" => "pro",
+        "Groovy" => "groovy",
+        "Visual Basic" => "vb",
+        "Objective-C" => "m",
+        "D" => "d",
+        "Nim" => "nim",
+        "Crystal" => "cr",
+        "Zig" => "zig",
+        "V" => "v",
+        "Julia" => "jl",
+        "Racket" => "rkt",
+        "Smalltalk" => "st",
+        "Tcl" => "tcl",
+        "AWK" => "awk",
+        "SED" => "sed",
+        "Makefile" => "mk",
+        "CMake" => "cmake",
+        "Dockerfile" => "dockerfile",
+        "LaTeX" => "tex",
+        "Markdown" => "md",
+        "ReStructuredText" => "rst",
+        "AsciiDoc" => "adoc",
+        "GraphQL" => "graphql",
+        "Solidity" => "sol",
+        "VHDL" => "vhd",
+        "Verilog" => "ver",
+        "SystemVerilog" => "sv",
+        "CUDA" => "cu",
+        "OpenCL" => "cl",
+        "HLSL" => "hlsl",
+        "GLSL" => "glsl",
+        "CoffeeScript" => "coffee",
+        "LiveScript" => "ls",
+        "PureScript" => "purs",
+        "Elm" => "elm",
+        "Reason" => "re",
+        "ReScript" => "res",
+        "Idris" => "idr",
+        "Agda" => "agda",
+        "Coq" => "v",
+        "Lean" => "lean",
+        "APL" => "apl",
+        "J" => "ijs",
+        "K" => "k",
+        "Q" => "q",
+        "BrainF*ck" => "bf",
+        "Whitespace" => "ws",
+        "Malbolge" => "mal",
+        "Befunge" => "bf",
+        "INTERCAL" => "i",
         _ => "txt"
     };
 
@@ -745,8 +834,8 @@ fn open_in_editor(filename: &str, editor: &str) -> Result<()> {
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 println!("[!] {} not found. Please install {} or use a different editor with -e/--editor", editor, editor);
-                println!("[\u{1F4A1}] Available editors: nvim, helix, nano, emacs, vim, code, etc.");
-                println!("[\u{1F4A1}] You can edit the file manually: {}", filename);
+                println!("[!] Available editors: nvim, helix, nano, emacs, vim, code, etc.");
+                println!("[!] You can edit the file manually: {}", filename);
                 Ok(())
             } else {
                 Err(anyhow::anyhow!("Failed to open {}: {}", editor, e))
@@ -1010,7 +1099,7 @@ fn track_enhanced_activity(filename: &str, initial_hash: &str, test_command: &st
     }
     
     // File was modified, now check if tests pass
-    println!("[\u{1F50D}] Code changes detected! Running validation tests...");
+    println!("[*] Code changes detected! Running validation tests...");
     
     if run_embedded_tests(test_command)? {
         Ok(ActivityResult::Solved)
@@ -1076,7 +1165,7 @@ fn run_embedded_tests(test_command: &str) -> Result<bool> {
             Ok(result.status.success())
         },
         Err(e) => {
-            println!("[\u{274C}] Failed to run tests: {}", e);
+            println!("[\u{2717}] Failed to run tests: {}", e);
             Ok(false)
         }
     }
@@ -1169,23 +1258,23 @@ fn show_daily_progress() -> Result<()> {
     let default_summary = ActivitySummary::default();
     let today_summary = tracker.daily_counts.get(&today).unwrap_or(&default_summary);
     
-    println!("\n{}", "\u{1F3AF} Daily Progress".bright_cyan());
+    println!("\n{}", "● Daily Progress".bright_cyan());
     println!("{}", "═══════════════".bright_cyan());
     
     if today_summary.solved > 0 {
-        println!("\u{2705} Problems solved today: {}", today_summary.solved.to_string().bright_green());
+        println!("\u{2713} Problems solved today: {}", today_summary.solved.to_string().bright_green());
     }
     if today_summary.attempted > 0 {
-        println!("\u{1F4DD} Problems attempted today: {}", today_summary.attempted.to_string().bright_yellow());
+        println!("# Problems attempted today: {}", today_summary.attempted.to_string().bright_yellow());
     }
     if today_summary.solved == 0 && today_summary.attempted == 0 {
-        println!("\u{1F4C5} No activity today yet - time to start!");
+        println!("◦ No activity today yet - time to start!");
     }
     
-    println!("\u{1F4CA} Total solved: {}", tracker.total_solved.to_string().bright_green());
-    println!("\u{1F4DD} Total attempted: {}", tracker.total_attempted.to_string().bright_yellow());
-    println!("\u{1F525} Current streak: {} days", tracker.streak_current.to_string().bright_red());
-    println!("\u{2B50} Longest streak: {} days", tracker.streak_longest.to_string().bright_magenta());
+    println!("▓ Total solved: {}", tracker.total_solved.to_string().bright_green());
+    println!("# Total attempted: {}", tracker.total_attempted.to_string().bright_yellow());
+    println!("▲ Current streak: {} days", tracker.streak_current.to_string().bright_red());
+    println!("\u{2605} Longest streak: {} days", tracker.streak_longest.to_string().bright_magenta());
     
     Ok(())
 }
