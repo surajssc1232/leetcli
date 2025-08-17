@@ -34,6 +34,10 @@ struct Cli {
     #[arg(short = 'e', long = "editor", default_value = "nvim")]
     editor: String,
     
+    /// Set Gemini API key persistently
+    #[arg(long = "set-api-key")]
+    set_api_key: Option<String>,
+    
     /// Show available models
     #[arg(long = "list-models")]
     list_models: bool,
@@ -77,6 +81,22 @@ enum ActivityResult {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    
+    if let Some(api_key) = cli.set_api_key {
+        if api_key.trim().is_empty() {
+            eprintln!("[!] API key cannot be empty");
+            return Ok(());
+        }
+        
+        if let Err(e) = save_api_key(&api_key) {
+            eprintln!("[!] Failed to save API key: {}", e);
+            return Ok(());
+        }
+        
+        println!("[+] API key saved successfully");
+        println!("[\u{1F4A1}] You can now use LeetCli without entering your API key each time");
+        return Ok(());
+    }
     
     if cli.graph {
         show_activity_graph()?;
