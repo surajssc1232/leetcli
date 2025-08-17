@@ -1,7 +1,17 @@
 [package]
 name = "leetcli"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Suraj chauhan surajssc1232@gmail.com"]
+description = "A CLI tool that generates random LeetCode problems with skeleton code using AI"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/surajssc1232/leetcli"
+homepage = "https://github.com/surajssc1232/leetcli"
+documentation = "https://docs.rs/leetcli"
+readme = "README.md"
+keywords = ["leetcode", "cli", "coding", "practice", "algorithms"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["problems/"]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
