@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use inquire::{Select, Password};
+use inquire::{Select, Password, Text};
 use reqwest::Client;
 use serde_json::json;
 use std::fs;
@@ -100,20 +100,128 @@ async fn main() -> Result<()> {
     ];
 
     let languages = vec![
-        "Rust",
-        "Python", 
-        "JavaScript",
+        // Popular/Mainstream
+        "Python",
+        "JavaScript", 
         "Java",
         "C++",
+        "C#",
+        "TypeScript",
         "Go",
-        "TypeScript"
+        "Rust",
+        "PHP",
+        "Swift",
+        "Kotlin",
+        "Ruby",
+        "C",
+        // Systems/Low-level
+        "Assembly",
+        "Zig",
+        "D",
+        "Nim",
+        "Crystal",
+        "V",
+        // Functional
+        "Haskell",
+        "OCaml",
+        "F#",
+        "Erlang",
+        "Elixir",
+        "Clojure",
+        "Scala",
+        "Lisp",
+        "Scheme",
+        "ML",
+        // JVM Languages
+        "Groovy",
+        "Ceylon",
+        // .NET Languages
+        "VB.NET",
+        "PowerShell",
+        // Web Technologies
+        "Dart",
+        "CoffeeScript",
+        "Elm",
+        "PureScript",
+        "ReasonML",
+        // Data Science/Math
+        "R",
+        "Julia",
+        "MATLAB",
+        "Octave",
+        "Mathematica",
+        "SAS",
+        "SPSS",
+        // Legacy/Enterprise
+        "COBOL",
+        "Fortran",
+        "Pascal",
+        "Ada",
+        "Delphi",
+        "Visual Basic",
+        "BASIC",
+        "PL/SQL",
+        // Scripting
+        "Perl",
+        "Lua",
+        "Tcl",
+        "AWK",
+        "Bash",
+        "Fish",
+        "Zsh",
+        // Mobile
+        "Objective-C",
+        "Flutter",
+        "React Native",
+        // Game Development
+        "GDScript",
+        "UnityScript",
+        "Blueprints",
+        // Educational
+        "Scratch",
+        "Logo",
+        "Alice",
+        // Esoteric
+        "Brainfuck",
+        "Whitespace",
+        "Malbolge",
+        "Befunge",
+        // Database
+        "SQL",
+        "NoSQL",
+        // Configuration/Markup
+        "JSON",
+        "XML", 
+        "YAML",
+        "TOML",
+        // Other
+        "Prolog",
+        "Smalltalk",
+        "APL",
+        "J",
+        "K",
+        "Q",
+        "Factor",
+        "Forth",
+        "PostScript",
+        "LaTeX",
+        "Custom (specify your own)"
     ];
 
     let selected_topic = Select::new("Select a topic:", topics)
         .prompt()?;
 
-    let selected_language = Select::new("Select programming language:", languages)
+    let selected_language_option = Select::new("Select programming language:", languages)
         .prompt()?;
+
+    // Handle custom language input
+    let selected_language = if selected_language_option == "Custom (specify your own)" {
+        Text::new("Enter your programming language:")
+            .with_help_message("e.g., Python, JavaScript, Assembly, etc.")
+            .prompt()?
+    } else {
+        selected_language_option.to_string()
+    };
 
     println!("Generating {} problem for {}...", selected_topic, selected_language);
 
